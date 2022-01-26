@@ -1,0 +1,887 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(rhdf5)
+library(eegkit)
+library(modelbased)
+library(moments)
+library(gsignal)
+library(randomForest)
+library(fda.usc)
+```
+
+```{r}
+X_train <- H5Fopen("X_train.h5")
+X_test <- H5Fopen("X_test.h5")
+y_train <- read.csv("y_train.csv", header = TRUE)
+```
+
+
+```{r}
+n_tot_train <- 15000
+n_val <- 3000 #Last 3000 individuals of training set used for validation
+ntrain <- n_tot_train - n_val
+```
+
+Preprocessing
+```{r}
+delta_1 <- apply(X_train$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 0.5, 4, order = 4)
+})
+theta_1 <- apply(X_train$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 4, 8, order = 4)
+})
+alpha_1 <- apply(X_train$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 8, 12, order = 4)
+})
+sigma_1 <- apply(X_train$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 12, 15, order = 4)
+})
+
+write.csv(t(delta_1), 'D:\\DREEM\\Dogaheh\\delta_6.csv', row.names = FALSE)
+write.csv(t(theta_1), 'D:\\DREEM\\Dogaheh\\theta_6.csv', row.names = FALSE)
+write.csv(t(alpha_1), 'D:\\DREEM\\Dogaheh\\alpha_6.csv', row.names = FALSE)
+write.csv(t(sigma_1), 'D:\\DREEM\\Dogaheh\\sigma_6.csv', row.names = FALSE)
+```
+
+```{r}
+test_deriv <- function(y){
+  #print(length(y))
+  d <- rep(0, length(y) - 1)
+  for (i in 2:length(y)){
+    d[i] <- y[i] - y[i-1]
+  }
+  return (unlist(d))
+}
+```
+
+```{r}
+delta_1 <- t(delta_1)
+theta_1 <- t(theta_1)
+alpha_1 <- t(alpha_1)
+sigma_1 <- t(sigma_1)
+```
+
+```{r}
+
+delta_1 <- read.csv('D:\\DREEM\\Dogaheh\\delta_5.csv')
+theta_1 <- read.csv('D:\\DREEM\\Dogaheh\\theta_5.csv')
+alpha_1 <- read.csv('D:\\DREEM\\Dogaheh\\alpha_5.csv')
+sigma_1 <- read.csv('D:\\DREEM\\Dogaheh\\sigma_5.csv')
+
+delta_1_features <- apply(delta_1, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+theta_1_features <- apply(theta_1, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+alpha_1_features <- apply(alpha_1, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+sigma_1_features <- apply(sigma_1, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+time_features <- data.frame(t(delta_1_features), t(theta_1_features), t(alpha_1_features), t(sigma_1_features))
+```
+
+
+```{r}
+delta_1_frequency <- apply(X_train$eeg_5, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 0.5 & f <= 4]
+  f <- f[f >= 0.5 & f <= 4]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+theta_1_frequency <- apply(X_train$eeg_5, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 4 & f <= 8]
+  f <- f[f >= 4 & f <= 8]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+alpha_1_frequency <- apply(X_train$eeg_5, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 8 & f <= 12]
+  f <- f[f >= 8 & f <= 12]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+sigma_1_frequency <- apply(X_train$eeg_5, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 12 & f <= 15]
+  f <- f[f >= 12 & f <= 15]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+freq_df <- data.frame(delta_1_frequency, theta_1_frequency, alpha_1_frequency, sigma_1_frequency)
+
+
+freq_features <- data.frame(freq_df, delta_1_frequency / theta_1_frequency, delta_1_frequency / alpha_1_frequency, delta_1_frequency / sigma_1_frequency, theta_1_frequency / alpha_1_frequency, theta_1_frequency / sigma_1_frequency, alpha_1_frequency / sigma_1_frequency)
+
+#all_features <- data.frame(time_features, freq_features)
+
+write.csv(all_features, 'D:\\DREEM\\Dogaheh\\all_features_6.csv', row.names = FALSE)
+```
+
+Non linear features
+
+```{r}
+#Rényi entropy
+
+renyi_delta <- apply(delta_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+renyi_theta <- apply(theta_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+renyi_alpha <- apply(alpha_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+renyi_sigma <- apply(sigma_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+compute_dist <- function(L){
+  s = 0
+  for (i in 2:length(L)){
+    s = s + sqrt(1 + (L[i] - L[i-1])^2)
+  }
+  
+  return (s)
+}
+
+max_dist <- function(L){
+  m = 0
+  for (i in 2:length(L)){
+    if (sqrt(i^2 + (L[i] - L[1])^2) > m){
+      m = sqrt(i^2 + (L[i] - L[1])^2)
+    }
+  }
+  
+  return (m)
+}
+
+#Katz's fractal degree
+katz_delta <- apply(delta_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+katz_theta <- apply(theta_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+katz_alpha <- apply(alpha_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+katz_sigma <- apply(sigma_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+katz_delta <- read.csv('D:\\DREEM\\Dogaheh\\katz_delta_4.csv')
+renyi_delta <- read.csv('D:\\DREEM\\Dogaheh\\renyi_delta_4.csv')
+
+katz_theta <- read.csv('D:\\DREEM\\Dogaheh\\katz_theta_4.csv')
+renyi_theta <- read.csv('D:\\DREEM\\Dogaheh\\renyi_theta_4.csv')
+
+katz_alpha <- read.csv('D:\\DREEM\\Dogaheh\\katz_alpha_4.csv')
+renyi_alpha <- read.csv('D:\\DREEM\\Dogaheh\\renyi_alpha_4.csv')
+
+katz_sigma <- read.csv('D:\\DREEM\\Dogaheh\\katz_sigma_4.csv')
+renyi_sigma <- read.csv('D:\\DREEM\\Dogaheh\\renyi_sigma_4.csv')
+
+nl_features_6 <- data.frame(renyi_delta, renyi_theta, renyi_alpha, renyi_sigma, katz_delta, katz_theta, katz_alpha, katz_sigma)
+
+write.csv(nl_features_6, 'D:\\DREEM\\Dogaheh\\nl_features_5.csv', row.names = FALSE)
+
+write.csv(katz_delta, 'D:\\DREEM\\Dogaheh\\katz_delta_5.csv', row.names = FALSE)
+write.csv(katz_theta, 'D:\\DREEM\\Dogaheh\\katz_theta_5.csv', row.names = FALSE)
+write.csv(renyi_delta, 'D:\\DREEM\\Dogaheh\\renyi_delta_5.csv', row.names = FALSE)
+write.csv(renyi_theta, 'D:\\DREEM\\Dogaheh\\renyi_theta_5.csv', row.names = FALSE)
+write.csv(katz_alpha, 'D:\\DREEM\\Dogaheh\\katz_alpha_5.csv', row.names = FALSE)
+write.csv(renyi_alpha, 'D:\\DREEM\\Dogaheh\\renyi_alpha_5.csv', row.names = FALSE)
+write.csv(katz_sigma, 'D:\\DREEM\\Dogaheh\\katz_sigma_5.csv', row.names = FALSE)
+write.csv(renyi_sigma, 'D:\\DREEM\\Dogaheh\\renyi_sigma_5.csv', row.names = FALSE)
+
+nl_features <- data.frame(renyi_delta, renyi_theta, renyi_alpha, renyi_sigma, katz_delta, katz_theta, katz_alpha, katz_sigma)
+
+write.csv(nl_features, 'D:\\DREEM\\Dogaheh\\nl_features_4.csv', row.names = FALSE)
+```
+
+```{r}
+delta_1 <- read.csv('D:\\DREEM\\Dogaheh\\delta_1.csv')
+
+
+renyi_delta <- apply(delta_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_delta <- apply(delta_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("delta_1"))
+write.csv(renyi_delta, 'D:\\DREEM\\Dogaheh\\renyi_delta_1.csv', row.names = FALSE)
+write.csv(katz_delta, 'D:\\DREEM\\Dogaheh\\katz_delta_1.csv', row.names = FALSE)
+
+theta_1 <- read.csv('D:\\DREEM\\Dogaheh\\theta_1.csv')
+
+renyi_theta <- apply(theta_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_theta <- apply(theta_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("theta_1"))
+write.csv(katz_theta, 'D:\\DREEM\\Dogaheh\\katz_theta_1.csv', row.names = FALSE)
+write.csv(renyi_theta, 'D:\\DREEM\\Dogaheh\\renyi_theta_1.csv', row.names = FALSE)
+
+alpha_1 <- read.csv('D:\\DREEM\\Dogaheh\\alpha_1.csv')
+
+renyi_alpha <- apply(alpha_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_alpha <- apply(alpha_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("alpha_1"))
+
+write.csv(katz_alpha, 'D:\\DREEM\\Dogaheh\\katz_alpha_1.csv', row.names = FALSE)
+write.csv(renyi_alpha, 'D:\\DREEM\\Dogaheh\\renyi_alpha_1.csv', row.names = FALSE)
+
+sigma_1 <- read.csv('D:\\DREEM\\Dogaheh\\sigma_1.csv')
+
+renyi_sigma <- apply(sigma_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_sigma <- apply(sigma_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("sigma_1"))
+
+write.csv(katz_sigma, 'D:\\DREEM\\Dogaheh\\katz_sigma_1.csv', row.names = FALSE)
+write.csv(renyi_sigma, 'D:\\DREEM\\Dogaheh\\renyi_sigma_1.csv', row.names = FALSE)
+
+nl_features <- data.frame(renyi_delta, renyi_theta, renyi_alpha, renyi_sigma, katz_delta, katz_theta, katz_alpha, katz_sigma)
+
+write.csv(nl_features, 'D:\\DREEM\\Dogaheh\\nl_features_1.csv', row.names = FALSE)
+
+```
+
+
+Old features
+```{r}
+lambda = 100
+
+f_delta <- 2.25
+f_theta <- 6
+f_alpha <- 10
+f_sigma <- 13.5
+  
+v_delta <- f_delta * lambda
+v_theta <- f_theta * lambda
+v_alpha <- f_alpha * lambda
+v_sigma <- f_sigma * lambda
+
+delta_1 <- read.csv('D:\\DREEM\\Dogaheh\\delta_1.csv')
+
+distances_delta <- apply(delta_1, 1, function(vec){
+  lambda = 100
+  subsampling = matrix(vec, nrow = lambda, ncol = length(vec)/lambda)
+  distances <- apply(subsampling, 1, function(vec){
+    ymax <- max(vec)
+    xmax <- which.max(vec)
+    ymin <- min(vec)
+    xmin <- which.min(vec)
+    
+    return (sqrt((ymax - ymin)^2 + (xmax - xmin)^2))
+  })
+  return (sum(distances))
+})
+
+Esis_delta <- apply(delta_1, 1, function(vec){v_delta*sum(vec^2)})
+
+rm(list = c("delta_1"))
+write.csv(distances_delta, 'D:\\DREEM\\Dogaheh\\mmd_delta_1.csv', row.names = FALSE)
+write.csv(Esis_delta, 'D:\\DREEM\\Dogaheh\\esis_delta_1.csv', row.names = FALSE)
+
+theta_1 <- read.csv('D:\\DREEM\\Dogaheh\\theta_1.csv')
+
+distances_theta <- apply(theta_1, 1, function(vec){
+  lambda = 100
+  subsampling = matrix(vec, nrow = lambda, ncol = length(vec)/lambda)
+  distances <- apply(subsampling, 1, function(vec){
+    ymax <- max(vec)
+    xmax <- which.max(vec)
+    ymin <- min(vec)
+    xmin <- which.min(vec)
+    
+    return (sqrt((ymax - ymin)^2 + (xmax - xmin)^2))
+  })
+  return (sum(distances))
+})
+
+Esis_theta <- apply(theta_1, 1, function(vec){v_theta*sum(vec^2)})
+
+rm(list = c("theta_1"))
+write.csv(distances_theta, 'D:\\DREEM\\Dogaheh\\mmd_theta_1.csv', row.names = FALSE)
+write.csv(Esis_theta, 'D:\\DREEM\\Dogaheh\\esis_theta_1.csv', row.names = FALSE)
+
+alpha_1 <- read.csv('D:\\DREEM\\Dogaheh\\alpha_1.csv')
+
+distances_alpha <- apply(alpha_1, 1, function(vec){
+  lambda = 100
+  subsampling = matrix(vec, nrow = lambda, ncol = length(vec)/lambda)
+  distances <- apply(subsampling, 1, function(vec){
+    ymax <- max(vec)
+    xmax <- which.max(vec)
+    ymin <- min(vec)
+    xmin <- which.min(vec)
+    
+    return (sqrt((ymax - ymin)^2 + (xmax - xmin)^2))
+  })
+  return (sum(distances))
+})
+
+Esis_alpha <- apply(alpha_1, 1, function(vec){v_alpha*sum(vec^2)})
+
+rm(list = c("alpha_1"))
+write.csv(distances_alpha, 'D:\\DREEM\\Dogaheh\\mmd_alpha_1.csv', row.names = FALSE)
+write.csv(Esis_alpha, 'D:\\DREEM\\Dogaheh\\esis_alpha_1.csv', row.names = FALSE)
+
+sigma_1 <- read.csv('D:\\DREEM\\Dogaheh\\sigma_1.csv')
+
+distances_sigma <- apply(sigma_1, 1, function(vec){
+  lambda = 100
+  subsampling = matrix(vec, nrow = lambda, ncol = length(vec)/lambda)
+  distances <- apply(subsampling, 1, function(vec){
+    ymax <- max(vec)
+    xmax <- which.max(vec)
+    ymin <- min(vec)
+    xmin <- which.min(vec)
+    
+    return (sqrt((ymax - ymin)^2 + (xmax - xmin)^2))
+  })
+  return (sum(distances))
+})
+
+Esis_sigma <- apply(sigma_1, 1, function(vec){v_sigma*sum(vec^2)})
+
+rm(list = c("sigma_1"))
+write.csv(distances_sigma, 'D:\\DREEM\\Dogaheh\\mmd_sigma_1.csv', row.names = FALSE)
+write.csv(Esis_sigma, 'D:\\DREEM\\Dogaheh\\esis_sigma_1.csv', row.names = FALSE)
+
+old_features_1 <- data.frame(distances_delta, distances_theta, distances_alpha, distances_sigma, Esis_delta, Esis_theta, Esis_alpha, Esis_sigma)
+
+write.csv(old_features_1, 'D:\\DREEM\\Dogaheh\\old_features_1.csv', row.names = FALSE)
+```
+
+
+```{r}
+ytrain <- y_train[,2]
+ntrain <- 12000
+yval <- y_train[(ntrain + 1):dim(all_features)[1],2]
+
+Atrain <- data.frame(all_features, ytrain)
+
+Atrain <- Atrain[(1:ntrain),]
+
+Aval <- all_features[(ntrain + 1):dim(all_features)[1],]
+```
+
+```{r}
+fit.rf = randomForest(as.factor(ytrain) ~ ., data = Atrain, 
+                      importance = TRUE, ntree = 100)
+
+yhat_val = predict(fit.rf, new = Aval, type= "response")
+confusion = table(yval, yhat_val)
+accuracy_rf = sum(diag(confusion))/sum(confusion)
+f1 = sum(diag(confusion))/(sum(diag(confusion)) + 1/2 * (sum(confusion) - sum(diag(confusion))))
+confusion
+accuracy_rf
+f1
+```
+
+Preprocessing
+```{r}
+delta_1_test <- apply(X_test$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 0.5, 4, order = 4)
+})
+theta_1_test <- apply(X_test$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 4, 8, order = 4)
+})
+alpha_1_test <- apply(X_test$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 8, 12, order = 4)
+})
+sigma_1_test <- apply(X_test$eeg_6, 2, function(vec){
+  eegfilter(vec, 50, 12, 15, order = 4)
+})
+
+write.csv(t(delta_1_test), 'D:\\DREEM\\Dogaheh\\delta_6_test.csv', row.names = FALSE)
+write.csv(t(theta_1_test), 'D:\\DREEM\\Dogaheh\\theta_6_test.csv', row.names = FALSE)
+write.csv(t(alpha_1_test), 'D:\\DREEM\\Dogaheh\\alpha_6_test.csv', row.names = FALSE)
+write.csv(t(sigma_1_test), 'D:\\DREEM\\Dogaheh\\sigma_6_test.csv', row.names = FALSE)
+```
+
+```{r}
+delta_1_test <- t(delta_1_test)
+theta_1_test <- t(theta_1_test)
+alpha_1_test <- t(alpha_1_test)
+sigma_1_test <- t(sigma_1_test)
+```
+
+
+```{r}
+
+delta_1_test <- read.csv('D:\\DREEM\\Dogaheh\\delta_5_test.csv')
+theta_1_test <- read.csv('D:\\DREEM\\Dogaheh\\theta_5_test.csv')
+alpha_1_test <- read.csv('D:\\DREEM\\Dogaheh\\alpha_5_test.csv')
+sigma_1_test <- read.csv('D:\\DREEM\\Dogaheh\\sigma_5_test.csv')
+
+delta_1_features_test <- apply(delta_1_test, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+
+theta_1_features_test <- apply(theta_1_test, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+alpha_1_features_test <- apply(alpha_1_test, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+sigma_1_features_test <- apply(sigma_1_test, 1, function(vec){
+  max <- max(vec)
+  med <- median(vec)
+  n_zc <- length(zero_crossings(vec))
+  sd <- sd(vec)
+  skew <- skewness(vec)
+  kurt <- kurtosis(vec)
+  dx <- test_deriv(vec)
+  d2x <- test_deriv(dx)
+  hj_m <- sd(dx)/sd(vec)
+  hj_c <- (sd(d2x)/sd(dx)) / hj_m
+  
+  return (c(max, med, n_zc, sd, skew, kurt, hj_m, hj_c))
+})
+
+time_features_test <- data.frame(t(delta_1_features_test), t(theta_1_features_test), t(alpha_1_features_test), t(sigma_1_features_test))
+```
+
+
+```{r}
+delta_1_frequency_test <- apply(X_test$eeg_6, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 0.5 & f <= 4]
+  f <- f[f >= 0.5 & f <= 4]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+theta_1_frequency_test <- apply(X_test$eeg_6, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 4 & f <= 8]
+  f <- f[f >= 4 & f <= 8]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+alpha_1_frequency_test <- apply(X_test$eeg_6, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 8 & f <= 12]
+  f <- f[f >= 8 & f <= 12]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+sigma_1_frequency_test <- apply(X_test$eeg_6, 2, function(vec){
+  psd <- pwelch(vec, window = 150, overlap = 0, fs = 50)
+  f <- psd$freq
+  s <- psd$spec
+  s <- s[f >= 12 & f <= 15]
+  f <- f[f >= 12 & f <= 15]
+  simpson <- int.simpson2(f, s)
+  
+  return(simpson)
+})
+
+freq_df_test <- data.frame(delta_1_frequency_test, theta_1_frequency_test, alpha_1_frequency_test, sigma_1_frequency_test)
+
+
+freq_features_test <- data.frame(freq_df_test, delta_1_frequency_test / theta_1_frequency_test, delta_1_frequency_test / alpha_1_frequency_test, delta_1_frequency_test / sigma_1_frequency_test, theta_1_frequency_test / alpha_1_frequency_test, theta_1_frequency_test / sigma_1_frequency_test, alpha_1_frequency_test / sigma_1_frequency_test)
+
+all_features_test <- data.frame(time_features_test, freq_features_test)
+
+write.csv(all_features_test, 'D:\\DREEM\\Dogaheh\\all_features_test_6.csv', row.names = FALSE)
+```
+
+
+```{r}
+delta_1 <- read.csv('D:\\DREEM\\Dogaheh\\delta_6_test.csv')
+
+
+renyi_delta <- apply(delta_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_delta <- apply(delta_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("delta_1"))
+write.csv(renyi_delta, 'D:\\DREEM\\Dogaheh\\renyi_delta_6_test.csv', row.names = FALSE)
+write.csv(katz_delta, 'D:\\DREEM\\Dogaheh\\katz_delta_6_test.csv', row.names = FALSE)
+
+theta_1 <- read.csv('D:\\DREEM\\Dogaheh\\theta_6_test.csv')
+
+renyi_theta <- apply(theta_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_theta <- apply(theta_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("theta_1"))
+write.csv(katz_theta, 'D:\\DREEM\\Dogaheh\\katz_theta_6_test.csv', row.names = FALSE)
+write.csv(renyi_theta, 'D:\\DREEM\\Dogaheh\\renyi_theta_6_test.csv', row.names = FALSE)
+
+alpha_1 <- read.csv('D:\\DREEM\\Dogaheh\\alpha_6_test.csv')
+
+renyi_alpha <- apply(alpha_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_alpha <- apply(alpha_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("alpha_1"))
+
+write.csv(katz_alpha, 'D:\\DREEM\\Dogaheh\\katz_alpha_6_test.csv', row.names = FALSE)
+write.csv(renyi_alpha, 'D:\\DREEM\\Dogaheh\\renyi_alpha_6_test.csv', row.names = FALSE)
+
+sigma_1 <- read.csv('D:\\DREEM\\Dogaheh\\sigma_6_test.csv')
+
+renyi_sigma <- apply(sigma_1, 1, function(vec){
+  hist <- hist(vec, 50, freq = FALSE)
+  alpha <- 2
+  densities = hist$density
+  s <- sum(densities^alpha)
+  return (-log2(s))
+})
+
+katz_sigma <- apply(sigma_1, 1, function(vec){
+  L <- compute_dist(vec)
+  d <- max_dist(vec)
+  n <- length(vec) - 1
+  a <- L/n
+  
+  df <- log10(L/a) / log10(d/a)
+  
+  return(df)
+})
+
+rm(list = c("sigma_1"))
+
+write.csv(katz_sigma, 'D:\\DREEM\\Dogaheh\\katz_sigma_6_test.csv', row.names = FALSE)
+write.csv(renyi_sigma, 'D:\\DREEM\\Dogaheh\\renyi_sigma_6_test.csv', row.names = FALSE)
+
+nl_features <- data.frame(renyi_delta, renyi_theta, renyi_alpha, renyi_sigma, katz_delta, katz_theta, katz_alpha, katz_sigma)
+
+write.csv(nl_features, 'D:\\DREEM\\Dogaheh\\nl_features_6_test .csv', row.names = FALSE)
+
+```
+
+
+```{r}
+all_features_1 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_1.csv')
+all_features_test_1 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_test_1.csv')
+
+all_features_2 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_2.csv')
+all_features_test_2 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_test_2.csv')
+
+all_features_4 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_4.csv')
+all_features_test_4 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_test_4.csv')
+
+all_features_5 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_5.csv')
+all_features_test_5 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_test_5.csv')
+
+all_features_6 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_6.csv')
+all_features_test_6 <- read.csv('D:\\DREEM\\Dogaheh\\all_features_test_6.csv')
+
+all_features <- data.frame(all_features_1, all_features_2, all_features_4, all_features_5, all_features_6)
+all_features_test <- data.frame(all_features_test_1, all_features_test_2, all_features_test_4, all_features_test_5, all_features_test_6)
+
+all_features = read.csv("path")
+all_features_test = read.csv("path")
+
+ATRAIN <- data.frame(all_features, ytrain)
+names(ATRAIN) <- c("x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63", "x64", "x65", "x66", "x67", "x68", "x69", "x70", "x71", "x72", "x73", "x74", "x75", "x76", "x77", "x78", "x79", "x80", "x81", "x82", "x83", "x84", "x85", "x86", "x87", "x88", "x89", "x90", "x91", "x92", "x93", "x94", "x95", "x96", "x97", "x98", "x99", "x100", "x101", "x102", "x103", "x104", "x105", "x106", "x107", "x108", "x109", "x110", "x111", "x112", "x113", "x114", "x115", "x116", "x117", "x118", "x119", "x120", "x121", "x122", "x123", "x124", "x125", "x126", "x127", "x128", "x129", "x130", "x131", "x132", "x233", "x134", "x135", "x136", "x137", "x138", "x139", "x140", "x141", "x142", "x143", "x144", "x145", "x146", "x147", "x148", "x149", "x150", "x151", "x152", "x153", "x154", "x155", "x156", "x157", "x158", "x159", "x160", "x161", "x162", "x163", "x164", "x165", "x166", "x167", "x168", "x169", "x170", "x171", "x172", "x173", "x174", "x175", "x176", "x177", "x178", "x179", "x180", "x181", "x182", "x183", "x184", "x185", "x186", "x187", "x188", "x189", "x190", "x191", "x192", "x193", "x194", "x195", "x196", "x197", "x198", "x199", "x200", "x201", "x202", "x203", "x204", "x205", "x206", "x207", "x208", "x209", "x210","ytrain")
+
+Atest <- all_features_test
+names(Atest) <- c("x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63", "x64", "x65", "x66", "x67", "x68", "x69", "x70", "x71", "x72", "x73", "x74", "x75", "x76", "x77", "x78", "x79", "x80", "x81", "x82", "x83", "x84", "x85", "x86", "x87", "x88", "x89", "x90", "x91", "x92", "x93", "x94", "x95", "x96", "x97", "x98", "x99", "x100", "x101", "x102", "x103", "x104", "x105", "x106", "x107", "x108", "x109", "x110", "x111", "x112", "x113", "x114", "x115", "x116", "x117", "x118", "x119", "x120", "x121", "x122", "x123", "x124", "x125", "x126", "x127", "x128", "x129", "x130", "x131", "x132", "x233", "x134", "x135", "x136", "x137", "x138", "x139", "x140", "x141", "x142", "x143", "x144", "x145", "x146", "x147", "x148", "x149", "x150", "x151", "x152", "x153", "x154", "x155", "x156", "x157", "x158", "x159", "x160", "x161", "x162", "x163", "x164", "x165", "x166", "x167", "x168", "x169", "x170", "x171", "x172", "x173", "x174", "x175", "x176", "x177", "x178", "x179", "x180", "x181", "x182", "x183", "x184", "x185", "x186", "x187", "x188", "x189", "x190", "x191", "x192", "x193", "x194", "x195", "x196", "x197", "x198", "x199", "x200", "x201", "x202", "x203", "x204", "x205", "x206", "x207", "x208", "x209", "x210")
+
+fit.rf = randomForest(as.factor(ytrain) ~ ., data = ATRAIN, 
+                      importance = TRUE, ntree = 100)
+
+yhat_val = predict(fit.rf, new = Atest, type= "response")
+indices = seq(15000, 20999)
+
+PREDICT <- data.frame(indices, yhat_val)
+names(PREDICT) <- c("index", "sleep_stage")
+write.csv(PREDICT, 'D:\\DREEM\\submission_12_dogaheh_rf.csv', row.names = FALSE)
+```
+
+```{r}
+write.csv(all_features, 'D:\\DREEM\\all_features_dogaheh.csv', row.names = FALSE)
+write.csv(all_features_test, 'D:\\DREEM\\all_features_dogaheh_test.csv', row.names = FALSE)
+```
+
